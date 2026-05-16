@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local environments
+.env
+.venv/
+venv/
+
+# Large local datasets
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Model artifacts
+checkpoints/*
+tokenizer/*
+!checkpoints/.gitkeep
+!tokenizer/.gitkeep
