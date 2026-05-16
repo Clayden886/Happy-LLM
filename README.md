@@ -2,8 +2,6 @@
 
 一个从零搭建的小型 LLaMA-like 语言模型项目，用于学习中文 tokenizer 训练、预训练、SFT 微调和文本生成的完整流程。
 
-项目定位是教学和实验，不追求商用级效果。当前默认模型约 30M 参数，适合在实验室服务器上验证完整 LLM 训练链路。
-
 ## Features
 
 - Decoder-only Transformer
