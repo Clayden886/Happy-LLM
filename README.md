@@ -13,6 +13,7 @@
 ├── requirements.txt         # 非 PyTorch 依赖
 ├── scripts/
 │   ├── prepare_zhwiki.py    # WikiExtractor 输出转预训练 JSONL
+│   ├── build_pretrain_corpus.py # 合并多个中文语料为统一 JSONL
 │   └── train_tokenizer.py   # BPE tokenizer 训练
 ├── data/
 │   ├── raw/                 # 原始数据，不提交
@@ -72,6 +73,28 @@ du -sh data/processed/pretrain_zhwiki_simplified.jsonl
 head -n 1 data/processed/pretrain_zhwiki_simplified.jsonl
 ```
 
+如果还下载了其他中文 JSONL/TXT 语料，可以合并为一个训练文件。脚本会自动读取 `.jsonl` 和 `.txt`，从常见字段 `text/content/data/正文` 中取正文，并统一输出为 `{"text": "..."}`：
+
+```bash
+python scripts/build_pretrain_corpus.py \
+  --inputs \
+    data/raw/seq_monkey/mobvoi_seq_monkey_general_open_corpus.jsonl \
+    data/processed/pretrain_zhwiki_simplified.jsonl \
+  --out_path data/processed/pretrain_all.jsonl \
+  --min_chars 80 \
+  --t2s
+```
+
+如果想临时限制数据大小，例如只构建 50GB：
+
+```bash
+python scripts/build_pretrain_corpus.py \
+  --inputs data/raw/seq_monkey data/processed/pretrain_zhwiki_simplified.jsonl \
+  --out_path data/processed/pretrain_50gb.jsonl \
+  --max_bytes 50GB \
+  --t2s
+```
+
 ## Tokenizer
 
 500M 级模型默认使用 12000 词表，比早期 6144 词表更适合中文维基语料。
@@ -122,7 +145,7 @@ CUDA_VISIBLE_DEVICES=4,5 \
 NCCL_P2P_DISABLE=1 \
 NCCL_IB_DISABLE=1 \
 torchrun --standalone --nproc_per_node=2 train_pretrain.py \
-  --data_path data/processed/pretrain_zhwiki_simplified.jsonl \
+  --data_path data/processed/pretrain_all.jsonl \
   --tokenizer_path tokenizer \
   --out_dir checkpoints/pretrain_500m \
   --epochs 1 \
