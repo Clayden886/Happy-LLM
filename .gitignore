@@ -16,5 +16,6 @@ data/processed/*
 # Model artifacts
 checkpoints/*
 tokenizer/*
+logs/*
 !checkpoints/.gitkeep
 !tokenizer/.gitkeep

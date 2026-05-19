@@ -1,6 +1,5 @@
 transformers==4.40.2
 tokenizers==0.19.1
-datasets==2.19.1
-numpy==1.26.4
 tqdm==4.66.4
-safetensors==0.4.3
+opencc-python-reimplemented==0.1.7
+wikiextractor==3.0.6

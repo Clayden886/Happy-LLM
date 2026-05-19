@@ -1,267 +1,176 @@
-# Happy LLM
+# Happy LLM 500M
 
-一个从零搭建的小型 LLaMA-like 语言模型项目，用于学习中文 tokenizer 训练、预训练、SFT 微调和文本生成的完整流程。
+面向 Tesla M40 24GB 双卡服务器的中文 Decoder-only Transformer 预训练项目。当前版本只保留 500M 级 FSDP 预训练所需的最小代码路径：中文维基数据处理、BPE tokenizer 训练、FSDP 预训练和续写测试。
 
-## Features
-
-- Decoder-only Transformer
-- RMSNorm
-- RoPE 旋转位置编码
-- Causal Self-Attention
-- SwiGLU MLP
-- 自回归 `generate`
-- BPE tokenizer 训练
-- 预训练脚本，支持 DDP 和断点恢复
-- SFT 脚本，支持 DDP 和断点恢复
-- Hugging Face 开源数据集转换脚本
-
-## Project Structure
+## Structure
 
 ```text
 .
-├── model.py                    # LLaMA-like Transformer
-├── dataset.py                  # PretrainDataset / SFTDataset
-├── train_pretrain.py           # 预训练入口
-├── train_sft.py                # SFT 微调入口
-├── generate.py                 # 推理生成入口
-├── requirements.txt            # 非 PyTorch 依赖
+├── model.py                 # LLaMA-like Transformer: RMSNorm / RoPE / SwiGLU
+├── dataset.py               # 预训练 JSONL/TXT 数据集
+├── train_pretrain.py        # FSDP 预训练入口
+├── generate.py              # 预训练模型续写测试
+├── requirements.txt         # 非 PyTorch 依赖
 ├── scripts/
-│   ├── train_tokenizer.py      # 训练 BPE tokenizer
-│   └── prepare_datasets.py     # 下载并转换开源数据集
+│   ├── prepare_zhwiki.py    # WikiExtractor 输出转预训练 JSONL
+│   └── train_tokenizer.py   # BPE tokenizer 训练
 ├── data/
-│   ├── raw/                    # 原始数据，本地生成，不提交
-│   └── processed/              # 处理后数据，本地生成，不提交
-├── tokenizer/                  # tokenizer 产物，本地生成，不提交
-└── checkpoints/                # 模型权重，本地生成，不提交
+│   ├── raw/                 # 原始数据，不提交
+│   └── processed/           # 处理后数据，不提交
+├── tokenizer/               # tokenizer 产物，不提交
+└── checkpoints/             # checkpoint，不提交
 ```
 
 ## Environment
 
-推荐 Python 3.10。
+推荐 Python 3.10。Tesla M40 建议使用 CUDA 11.8 对应的 PyTorch，避免过新的 CUDA wheel 带来兼容风险。
 
 ```bash
-conda create -n happy-llm python=3.10 -y
-conda activate happy-llm
-```
+conda create -p /data2/tangyb/conda_envs/happy-llm python=3.10 -y
+conda activate /data2/tangyb/conda_envs/happy-llm
 
-Tesla M40 服务器建议使用 CUDA 11.8 对应的 PyTorch：
+pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
+  --index-url https://download.pytorch.org/whl/cu118
 
-```bash
-pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
 ```
 
-本项目面向 NVIDIA Tesla M40 24GB 这类老卡做了保守设计：
-
-- 默认使用 FP32
-- 不依赖 Flash Attention
-- 不依赖 xFormers / bitsandbytes
-- 使用 PyTorch 原生 attention
+项目默认使用 FP32，不依赖 FlashAttention、xFormers、bitsandbytes 或 Tensor Core。
 
 ## Data
 
-项目使用两类数据。
-
-预训练数据格式：
+训练数据格式：
 
 ```jsonl
 {"text": "这里是一段中文文本。"}
 ```
 
-SFT 数据格式：
-
-```jsonl
-{"messages": [{"role": "system", "content": "你是一个AI助手。"}, {"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好！有什么可以帮你？"}]}
-```
-
-也兼容简单 SFT 字段：
-
-```jsonl
-{"instruction": "中国的首都是哪里？", "output": "中国的首都是北京。"}
-{"human": "中国的首都是哪里？", "assistant": "中国的首都是北京。"}
-```
-
-## Prepare Open Datasets
-
-安装依赖后，可以用脚本准备开源数据。
-
-准备 `hfl/alpaca_zh_51k`：
+推荐使用中文维基百科 dump。先用 WikiExtractor 解包：
 
 ```bash
-python scripts/prepare_datasets.py sft-alpaca-zh \
-  --out_path data/processed/sft_alpaca_zh_51k.jsonl
+python -m wikiextractor.WikiExtractor \
+  data/raw/zhwiki/zhwiki-latest-pages-articles.xml.bz2 \
+  -o data/raw/zhwiki/extracted \
+  --json
 ```
 
-先抽 1000 条测试：
+再转换成项目训练格式，并将繁体转简体：
 
 ```bash
-python scripts/prepare_datasets.py sft-alpaca-zh \
-  --out_path data/processed/sft_alpaca_zh_1k.jsonl \
-  --max_samples 1000
+python scripts/prepare_zhwiki.py \
+  --input_dir data/raw/zhwiki/extracted \
+  --out_path data/processed/pretrain_zhwiki_simplified.jsonl \
+  --min_chars 80 \
+  --t2s
 ```
 
-准备 `BAAI/CCI3-HQ` 子集前，需要在 Hugging Face 页面接受访问条件，并设置 token：
+检查数据：
 
 ```bash
-export HF_TOKEN=your_huggingface_token
+wc -l data/processed/pretrain_zhwiki_simplified.jsonl
+du -sh data/processed/pretrain_zhwiki_simplified.jsonl
+head -n 1 data/processed/pretrain_zhwiki_simplified.jsonl
 ```
 
-抽取 1 万条预训练文本：
+## Tokenizer
+
+500M 级模型默认使用 12000 词表，比早期 6144 词表更适合中文维基语料。
 
 ```bash
-python scripts/prepare_datasets.py pretrain-cci3-hq \
-  --out_path data/processed/pretrain_cci3_hq.jsonl \
-  --max_docs 10000 \
-  --min_chars 80
-```
+rm -rf tokenizer
 
-按大小抽取，例如约 1GB：
-
-```bash
-python scripts/prepare_datasets.py pretrain-cci3-hq \
-  --out_path data/processed/pretrain_cci3_hq_1gb.jsonl \
-  --max_bytes 1073741824 \
-  --min_chars 80
-```
-
-## Train Tokenizer
-
-```bash
 python scripts/train_tokenizer.py \
   --data_dir data/processed \
   --out_dir tokenizer \
-  --vocab_size 6144
+  --vocab_size 12000 \
+  --model_max_length 512
 ```
 
-如果 tokenizer 输出大量 `<unk>`，说明语料太小或覆盖不足，需要换更大的中文语料重新训练。
-
-## Pretrain
-
-CPU 或 Mac 本地只建议用小模型做 smoke test：
+训练完成后确认没有大量 `<unk>`：
 
 ```bash
-python train_pretrain.py \
-  --data_path data/processed/pretrain_cci3_hq.jsonl \
+python - << 'PY'
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained("tokenizer")
+text = "你好，我正在训练一个五亿参数中文语言模型。"
+ids = tok.encode(text)
+print("vocab:", len(tok))
+print(ids)
+print(tok.decode(ids))
+PY
+```
+
+## Train 500M
+
+默认配置：
+
+```text
+dim = 1536
+n_layers = 18
+n_heads = 24
+max_seq_len = 512
+vocab_size ≈ 12000
+parameters ≈ 528M
+```
+
+建议先使用已经验证较稳定的 GPU4、GPU5。M40 没有 NVLink，FSDP 通信会比较慢，所以脚本默认保显存优先：梯度累积时每个 micro step 都同步并切分梯度。确认显存充足后，可以额外加 `--no_sync_grad_accum` 减少通信。
+
+```bash
+mkdir -p logs
+
+CUDA_VISIBLE_DEVICES=4,5 \
+NCCL_P2P_DISABLE=1 \
+NCCL_IB_DISABLE=1 \
+torchrun --standalone --nproc_per_node=2 train_pretrain.py \
+  --data_path data/processed/pretrain_zhwiki_simplified.jsonl \
   --tokenizer_path tokenizer \
-  --out_dir checkpoints/pretrain \
+  --out_dir checkpoints/pretrain_500m \
   --epochs 1 \
-  --batch_size 2 \
-  --max_seq_len 64 \
-  --dim 128 \
-  --n_layers 2 \
-  --n_heads 4
-```
-
-服务器正式训练可以使用默认 30M 级配置：
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 train_pretrain.py \
-  --data_path data/processed/pretrain_cci3_hq.jsonl \
-  --tokenizer_path tokenizer \
-  --out_dir checkpoints/pretrain \
-  --epochs 3 \
-  --batch_size 2 \
+  --batch_size 1 \
+  --grad_accum_steps 8 \
   --max_seq_len 512 \
-  --dim 512 \
-  --n_layers 8 \
-  --n_heads 8 \
-  --learning_rate 3e-4 \
-  --log_interval 10 \
-  --save_interval 1000
-```
-
-断点恢复：
-
-```bash
-python train_pretrain.py \
-  --resume checkpoints/pretrain/pretrain_step_1000.pt \
-  --data_path data/processed/pretrain_cci3_hq.jsonl \
-  --tokenizer_path tokenizer \
-  --out_dir checkpoints/pretrain
-```
-
-## SFT
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 train_sft.py \
-  --data_path data/processed/sft_alpaca_zh_51k.jsonl \
-  --tokenizer_path tokenizer \
-  --out_dir checkpoints/sft \
-  --pretrained_checkpoint checkpoints/pretrain/pretrain_step_1000.pt \
-  --epochs 3 \
-  --batch_size 2 \
-  --max_seq_len 512 \
-  --dim 512 \
-  --n_layers 8 \
-  --n_heads 8 \
+  --dim 1536 \
+  --n_layers 18 \
+  --n_heads 24 \
+  --activation_checkpointing \
   --learning_rate 1e-4 \
   --log_interval 10 \
-  --save_interval 1000
+  --save_interval 500 \
+  2>&1 | tee logs/pretrain_500m.log
 ```
 
-断点恢复：
+如果 528M 显存或通信压力太大，先降到 462M：
 
 ```bash
-python train_sft.py \
-  --resume checkpoints/sft/sft_step_1000.pt \
-  --data_path data/processed/sft_alpaca_zh_51k.jsonl \
-  --tokenizer_path tokenizer \
-  --out_dir checkpoints/sft
+--n_layers 16
+```
+
+Checkpoint 默认只保存模型权重、配置和训练参数，避免 500M 模型的 Adam 状态占用大量磁盘。确实需要保存优化器状态时再加：
+
+```bash
+--save_optimizer
 ```
 
 ## Generate
 
-预训练模型续写：
+训练结束后用最终 checkpoint 做续写测试：
 
 ```bash
-python generate.py \
-  --checkpoint checkpoints/pretrain/pretrain_step_1000.pt \
-  --mode pretrain \
-  --prompt "大语言模型" \
-  --max_new_tokens 64
+CUDA_VISIBLE_DEVICES=4 python generate.py \
+  --checkpoint checkpoints/pretrain_500m/pretrain_step_XXXXX.pt \
+  --tokenizer_path tokenizer \
+  --prompt "人工智能是" \
+  --max_new_tokens 120 \
+  --temperature 0.8 \
+  --top_k 50
 ```
 
-SFT 模型对话：
+这是预训练模型，不是指令助手。测试时更适合使用“续写式”提示，例如“人工智能是”“李白是唐代著名诗人，他”。
 
-```bash
-python generate.py \
-  --checkpoint checkpoints/sft/sft_step_1000.pt \
-  --mode sft \
-  --prompt "中国的首都是哪里？" \
-  --max_new_tokens 64
-```
+## Notes For M40
 
-## Multi-GPU Notes
-
-目标服务器是 8 张 Tesla M40 24GB。根据拓扑，建议优先测试：
-
-```text
-1 卡
-2 卡：GPU0,1
-4 卡：GPU0,1,2,3
-```
-
-不要一开始直接使用 8 卡。M40 通常没有 NVLink，跨 NUMA 通信可能导致 DDP 同步开销较高。正式训练前用日志中的 `tokens/s` 比较不同卡数效率。
-
-## Recommended Workflow
-
-```text
-1. 在服务器安装环境
-2. 准备 CCI3-HQ 子集和 alpaca_zh_51k
-3. 用处理后的数据重新训练 tokenizer
-4. 单卡跑 smoke test
-5. 测试 2 卡 / 4 卡 tokens/s
-6. 正式预训练
-7. 从预训练 checkpoint 做 SFT
-8. 用 generate.py 测试模型输出
-```
-
-## License And Dataset Notice
-
-本项目代码用于学习和研究。使用开源数据集前，请确认对应数据集的 license、访问条件和用途限制。
-
-特别注意：
-
-- `BAAI/CCI3-HQ` 可能需要接受访问条件。
-- `hfl/alpaca_zh_51k` 是中文指令数据，使用前应检查其数据来源和许可说明。
-- 不要将受限制数据或大体积训练产物直接提交到 GitHub。
+- 优先使用已经验证稳定的 GPU 组合，例如 `CUDA_VISIBLE_DEVICES=4,5`。
+- 避开有 ECC double-bit 记录或残留异常进程的 GPU。
+- 没有 `tmux` 时可以用 `nohup`，但推荐安装或使用 `tmux` 保存长任务会话。
+- 长训练建议始终用 `tee` 保存日志，方便之后画 loss 曲线。
+- FSDP 对通信比较敏感；如果 NCCL 或 timeout 问题频繁出现，优先退回 462M 配置并确认 GPU 组合稳定。
