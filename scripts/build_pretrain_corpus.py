@@ -1,9 +1,11 @@
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
 
 TEXT_FIELDS = ("text", "content", "data", "正文")
+SUPPORTED_SUFFIXES = (".jsonl", ".json", ".txt", ".parquet")
 
 
 def get_converter(enabled: bool):
@@ -48,8 +50,8 @@ def iter_input_files(path: Path):
         yield path
         return
 
-    for suffix in ("*.jsonl", "*.txt"):
-        yield from sorted(path.rglob(suffix))
+    for suffix in SUPPORTED_SUFFIXES:
+        yield from sorted(path.rglob(f"*{suffix}"))
 
 
 def iter_records(path: Path):
@@ -69,6 +71,38 @@ def iter_records(path: Path):
                     yield json.loads(line)
                 except json.JSONDecodeError:
                     continue
+
+    if path.suffix == ".json":
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if isinstance(data, list):
+            yield from data
+        elif isinstance(data, dict):
+            for key in ("data", "train", "rows", "documents"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    yield from value
+                    return
+            yield data
+
+        return
+
+    if path.suffix == ".parquet":
+        try:
+            import pyarrow.parquet as pq
+        except ModuleNotFoundError as exc:
+            raise SystemExit(
+                "Missing dependency: pyarrow. Install it with "
+                "`pip install -r requirements.txt`."
+            ) from exc
+
+        parquet_file = pq.ParquetFile(path)
+        for batch in parquet_file.iter_batches(batch_size=2048):
+            columns = batch.to_pydict()
+            row_count = len(next(iter(columns.values()), []))
+            for index in range(row_count):
+                yield {key: value[index] for key, value in columns.items()}
 
 
 def parse_max_bytes(value: str):
@@ -99,12 +133,13 @@ def main():
         "--inputs",
         nargs="+",
         required=True,
-        help="Input files or directories containing .jsonl/.txt files.",
+        help="Input files or directories containing .jsonl/.json/.txt/.parquet files.",
     )
     parser.add_argument("--out_path", type=str, default="data/processed/pretrain_all.jsonl")
     parser.add_argument("--min_chars", type=int, default=80)
     parser.add_argument("--max_bytes", type=str, default="")
     parser.add_argument("--t2s", action="store_true")
+    parser.add_argument("--dedupe", action="store_true", help="Remove exact duplicate texts.")
     args = parser.parse_args()
 
     out_path = Path(args.out_path)
@@ -116,6 +151,8 @@ def main():
     written = 0
     saved = 0
     skipped = 0
+    duplicated = 0
+    seen_hashes = set()
 
     with out_path.open("w", encoding="utf-8") as w:
         for input_arg in args.inputs:
@@ -133,6 +170,13 @@ def main():
                         skipped += 1
                         continue
 
+                    if args.dedupe:
+                        digest = hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+                        if digest in seen_hashes:
+                            duplicated += 1
+                            continue
+                        seen_hashes.add(digest)
+
                     row = json.dumps({"text": text}, ensure_ascii=False) + "\n"
                     row_bytes = len(row.encode("utf-8"))
 
@@ -140,6 +184,7 @@ def main():
                         print("reached max_bytes")
                         print(f"saved docs: {saved}")
                         print(f"skipped: {skipped}")
+                        print(f"duplicated: {duplicated}")
                         print(f"size GB: {written / 1024**3:.2f}")
                         print(f"output: {out_path}")
                         return
@@ -152,12 +197,14 @@ def main():
                         print(
                             f"saved {saved} docs, "
                             f"{written / 1024**3:.2f} GB, "
-                            f"skipped {skipped}"
+                            f"skipped {skipped}, "
+                            f"duplicated {duplicated}"
                         )
 
     print("done")
     print(f"saved docs: {saved}")
     print(f"skipped: {skipped}")
+    print(f"duplicated: {duplicated}")
     print(f"size GB: {written / 1024**3:.2f}")
     print(f"output: {out_path}")
 

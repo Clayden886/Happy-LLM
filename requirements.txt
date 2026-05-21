@@ -3,3 +3,4 @@ tokenizers==0.19.1
 tqdm==4.66.4
 opencc-python-reimplemented==0.1.7
 wikiextractor==3.0.6
+pyarrow==16.1.0
