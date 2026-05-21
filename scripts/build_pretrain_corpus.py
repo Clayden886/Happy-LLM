@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import random
 from pathlib import Path
 
 
@@ -105,6 +106,40 @@ def iter_records(path: Path):
                 yield {key: value[index] for key, value in columns.items()}
 
 
+def iter_source_records(path: Path):
+    for file_path in iter_input_files(path):
+        print(f"reading {file_path}")
+        yield from iter_records(file_path)
+
+
+def iter_mixed_sources(paths, seed: int):
+    rng = random.Random(seed)
+    active = []
+
+    for path in paths:
+        if not path.exists():
+            print(f"skip missing: {path}")
+            continue
+        active.append((str(path), iter_source_records(path)))
+
+    while active:
+        index = rng.randrange(len(active))
+        source_name, iterator = active[index]
+        try:
+            yield next(iterator)
+        except StopIteration:
+            print(f"finished source: {source_name}")
+            active.pop(index)
+
+
+def iter_sequential_sources(paths):
+    for path in paths:
+        if not path.exists():
+            print(f"skip missing: {path}")
+            continue
+        yield from iter_source_records(path)
+
+
 def parse_max_bytes(value: str):
     if not value:
         return 0
@@ -140,6 +175,12 @@ def main():
     parser.add_argument("--max_bytes", type=str, default="")
     parser.add_argument("--t2s", action="store_true")
     parser.add_argument("--dedupe", action="store_true", help="Remove exact duplicate texts.")
+    parser.add_argument(
+        "--mix_sources",
+        action="store_true",
+        help="Randomly interleave records from each input path instead of concatenating by order.",
+    )
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     out_path = Path(args.out_path)
@@ -154,52 +195,49 @@ def main():
     duplicated = 0
     seen_hashes = set()
 
+    input_paths = [Path(input_arg) for input_arg in args.inputs]
+    if args.mix_sources:
+        records = iter_mixed_sources(input_paths, args.seed)
+    else:
+        records = iter_sequential_sources(input_paths)
+
     with out_path.open("w", encoding="utf-8") as w:
-        for input_arg in args.inputs:
-            input_path = Path(input_arg)
-            if not input_path.exists():
-                print(f"skip missing: {input_path}")
+        for item in records:
+            text = convert(clean_text(get_text(item)))
+            if len(text) < args.min_chars:
+                skipped += 1
                 continue
 
-            for path in iter_input_files(input_path):
-                print(f"reading {path}")
+            if args.dedupe:
+                digest = hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+                if digest in seen_hashes:
+                    duplicated += 1
+                    continue
+                seen_hashes.add(digest)
 
-                for item in iter_records(path):
-                    text = convert(clean_text(get_text(item)))
-                    if len(text) < args.min_chars:
-                        skipped += 1
-                        continue
+            row = json.dumps({"text": text}, ensure_ascii=False) + "\n"
+            row_bytes = len(row.encode("utf-8"))
 
-                    if args.dedupe:
-                        digest = hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
-                        if digest in seen_hashes:
-                            duplicated += 1
-                            continue
-                        seen_hashes.add(digest)
+            if max_bytes > 0 and written + row_bytes > max_bytes:
+                print("reached max_bytes")
+                print(f"saved docs: {saved}")
+                print(f"skipped: {skipped}")
+                print(f"duplicated: {duplicated}")
+                print(f"size GB: {written / 1024**3:.2f}")
+                print(f"output: {out_path}")
+                return
 
-                    row = json.dumps({"text": text}, ensure_ascii=False) + "\n"
-                    row_bytes = len(row.encode("utf-8"))
+            w.write(row)
+            written += row_bytes
+            saved += 1
 
-                    if max_bytes > 0 and written + row_bytes > max_bytes:
-                        print("reached max_bytes")
-                        print(f"saved docs: {saved}")
-                        print(f"skipped: {skipped}")
-                        print(f"duplicated: {duplicated}")
-                        print(f"size GB: {written / 1024**3:.2f}")
-                        print(f"output: {out_path}")
-                        return
-
-                    w.write(row)
-                    written += row_bytes
-                    saved += 1
-
-                    if saved % 100000 == 0:
-                        print(
-                            f"saved {saved} docs, "
-                            f"{written / 1024**3:.2f} GB, "
-                            f"skipped {skipped}, "
-                            f"duplicated {duplicated}"
-                        )
+            if saved % 100000 == 0:
+                print(
+                    f"saved {saved} docs, "
+                    f"{written / 1024**3:.2f} GB, "
+                    f"skipped {skipped}, "
+                    f"duplicated {duplicated}"
+                )
 
     print("done")
     print(f"saved docs: {saved}")
