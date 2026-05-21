@@ -72,6 +72,7 @@ def iter_input_files(path: Path):
 
     for suffix in SUPPORTED_SUFFIXES:
         yield from sorted(path.rglob(f"*{suffix}"))
+    yield from sorted(file_path for file_path in path.rglob("wiki_*") if file_path.is_file())
 
 
 def iter_records(path: Path):
@@ -81,7 +82,7 @@ def iter_records(path: Path):
                 yield line
         return
 
-    if path.suffix == ".jsonl":
+    if path.suffix == ".jsonl" or path.name.startswith("wiki_"):
         with path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
