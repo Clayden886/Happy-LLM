@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer
 
-from dataset import PretrainDataset
+from dataset import SFTDataset
 from model import ModelConfig, Transformer
 
 
@@ -100,12 +100,22 @@ def save_checkpoint(model, optimizer, config, args, step: int, out_dir: Path, is
         "step": step,
     }
 
-    path = out_dir / f"pretrain_step_{step}.pt"
+    path = out_dir / f"sft_step_{step}.pt"
     torch.save(checkpoint, path)
     print(f"Saved checkpoint to {path}")
 
 
-def load_checkpoint(model, optimizer, resume_path: str, device: str):
+def load_model_weights(model, checkpoint_path: str, device: str, strict: bool = True):
+    if not checkpoint_path:
+        return 0
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+    model.load_state_dict(state_dict, strict=strict)
+    return int(checkpoint.get("step", 0)) if isinstance(checkpoint, dict) else 0
+
+
+def load_training_checkpoint(model, optimizer, resume_path: str, device: str):
     if not resume_path:
         return 0
 
@@ -137,7 +147,7 @@ def train(args):
         dropout=args.dropout,
     )
 
-    dataset = PretrainDataset(
+    dataset = SFTDataset(
         data_path=args.data_path,
         tokenizer=tokenizer,
         max_length=args.max_seq_len,
@@ -160,6 +170,10 @@ def train(args):
     )
 
     model = Transformer(config).to(device)
+    if args.pretrained_checkpoint:
+        loaded_step = load_model_weights(model, args.pretrained_checkpoint, device, strict=True)
+        print_main(is_main, f"Loaded pretrained checkpoint: {args.pretrained_checkpoint} (step {loaded_step})")
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,
@@ -167,7 +181,7 @@ def train(args):
         weight_decay=args.weight_decay,
     )
 
-    global_step = load_checkpoint(model, optimizer, args.resume, device)
+    global_step = load_training_checkpoint(model, optimizer, args.resume, device)
 
     if is_ddp:
         model = DDP(
@@ -265,12 +279,13 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, default="data/processed/pretrain_all.jsonl")
+    parser.add_argument("--data_path", type=str, default="data/processed/sft_alpaca_zh.jsonl")
     parser.add_argument("--tokenizer_path", type=str, default="tokenizer")
-    parser.add_argument("--out_dir", type=str, default="checkpoints/pretrain")
+    parser.add_argument("--out_dir", type=str, default="checkpoints/sft")
+    parser.add_argument("--pretrained_checkpoint", type=str, default="")
     parser.add_argument("--resume", type=str, default="")
 
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--max_seq_len", type=int, default=512)
@@ -280,7 +295,7 @@ def main():
     parser.add_argument("--n_heads", type=int, default=16)
     parser.add_argument("--dropout", type=float, default=0.0)
 
-    parser.add_argument("--learning_rate", type=float, default=3e-4)
+    parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--grad_clip", type=float, default=1.0)

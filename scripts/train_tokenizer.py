@@ -11,6 +11,8 @@ SPECIAL_TOKENS = [
     "<unk>",
     "<s>",
     "</s>",
+    "<|im_start|>",
+    "<|im_end|>",
 ]
 
 
@@ -67,6 +69,15 @@ def train_tokenizer(data_dir: Path, out_dir: Path, vocab_size: int, model_max_le
         bos_token="<s>",
         eos_token="</s>",
         pad_token="</s>",
+        additional_special_tokens=["<|im_start|>", "<|im_end|>"],
+    )
+    fast_tokenizer.chat_template = (
+        "{% for message in messages %}"
+        "{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}"
+        "{% endfor %}"
+        "{% if add_generation_prompt %}"
+        "{{ '<|im_start|>assistant\\n' }}"
+        "{% endif %}"
     )
     fast_tokenizer.model_max_length = model_max_length
     fast_tokenizer.save_pretrained(str(out_dir))
