@@ -6,6 +6,16 @@ from pathlib import Path
 
 
 TEXT_FIELDS = ("text", "content", "data", "正文")
+COMBINE_FIELDS = (
+    "title",
+    "desc",
+    "answer",
+    "chinese",
+    "question",
+    "instruction",
+    "input",
+    "output",
+)
 SUPPORTED_SUFFIXES = (".jsonl", ".json", ".txt", ".parquet")
 
 
@@ -42,6 +52,15 @@ def get_text(item):
         value = item.get(field)
         if isinstance(value, str) and value.strip():
             return value
+
+    parts = []
+    for field in COMBINE_FIELDS:
+        value = item.get(field)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+
+    if parts:
+        return "\n".join(parts)
 
     return ""
 
