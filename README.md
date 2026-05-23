@@ -121,7 +121,7 @@ torchrun --standalone --nproc_per_node=2 train_pretrain.py \
   --n_heads 16 \
   --learning_rate 3e-4 \
   --log_interval 20 \
-  --save_interval 1000 \
+  --save_interval 20000 \
   2>&1 | tee logs/pretrain_160m.log
 ```
 
@@ -161,8 +161,14 @@ torchrun --standalone --nproc_per_node=2 train_sft.py \
   --n_heads 16 \
   --learning_rate 2e-5 \
   --log_interval 20 \
-  --save_interval 1000 \
+  --save_interval 20000 \
   2>&1 | tee logs/sft_160m.log
+```
+
+默认 checkpoint 只保存模型权重、配置、参数和 step。需要精确断点续训时再加：
+
+```bash
+--save_optimizer
 ```
 
 ## Generate

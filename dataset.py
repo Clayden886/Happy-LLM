@@ -40,6 +40,8 @@ class PretrainDataset(Dataset):
         input_ids = self.tokenizer.encode(
             self.samples[idx],
             add_special_tokens=False,
+            truncation=True,
+            max_length=max(1, self.max_length - 2),
         )
 
         input_ids = [self.tokenizer.bos_token_id] + input_ids + [self.tokenizer.eos_token_id]
@@ -113,6 +115,8 @@ class SFTDataset(Dataset):
             message_ids = self.tokenizer.encode(
                 message_text,
                 add_special_tokens=False,
+                truncation=True,
+                max_length=self.max_length + 1,
             )
 
             input_ids.extend(message_ids)

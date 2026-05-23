@@ -87,22 +87,30 @@ def reduce_mean(tensor: torch.Tensor, is_ddp: bool):
     return tensor
 
 
-def save_checkpoint(model, optimizer, config, args, step: int, out_dir: Path, is_main: bool):
-    if not is_main:
-        return
+def save_checkpoint(model, optimizer, config, args, step: int, out_dir: Path, is_main: bool, is_ddp: bool):
+    if is_ddp:
+        dist.barrier()
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint = {
-        "model": unwrap_model(model).state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "config": config.__dict__,
-        "args": vars(args),
-        "step": step,
-    }
+    if is_main:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint = {
+            "model": unwrap_model(model).state_dict(),
+            "config": config.__dict__,
+            "args": vars(args),
+            "step": step,
+        }
 
-    path = out_dir / f"pretrain_step_{step}.pt"
-    torch.save(checkpoint, path)
-    print(f"Saved checkpoint to {path}")
+        if args.save_optimizer:
+            checkpoint["optimizer"] = optimizer.state_dict()
+
+        path = out_dir / f"pretrain_step_{step}.pt"
+        tmp_path = out_dir / f"pretrain_step_{step}.pt.tmp"
+        torch.save(checkpoint, tmp_path)
+        os.replace(tmp_path, path)
+        print(f"Saved checkpoint to {path}", flush=True)
+
+    if is_ddp:
+        dist.barrier()
 
 
 def load_checkpoint(model, optimizer, resume_path: str, device: str):
@@ -257,9 +265,9 @@ def train(args):
                 )
 
             if global_step % args.save_interval == 0:
-                save_checkpoint(model, optimizer, config, args, global_step, Path(args.out_dir), is_main)
+                save_checkpoint(model, optimizer, config, args, global_step, Path(args.out_dir), is_main, is_ddp)
 
-    save_checkpoint(model, optimizer, config, args, global_step, Path(args.out_dir), is_main)
+    save_checkpoint(model, optimizer, config, args, global_step, Path(args.out_dir), is_main, is_ddp)
     cleanup_distributed(is_ddp)
 
 
@@ -287,7 +295,8 @@ def main():
 
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--log_interval", type=int, default=10)
-    parser.add_argument("--save_interval", type=int, default=1000)
+    parser.add_argument("--save_interval", type=int, default=20000)
+    parser.add_argument("--save_optimizer", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
